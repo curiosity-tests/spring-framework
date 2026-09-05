@@ -1,15 +1,77 @@
 name: Build Pull Request
-on: pull_request
+
+# racecar fork-testbed patch. Changes from upstream:
+#   1. workflow_dispatch with a `leg` input, so racecar can trigger a run and
+#      choose baseline vs instrumented. Upstream only fires on pull_request,
+#      which racecar cannot drive.
+#   2. actions/checkout -> crashappsec/action-checkout, which wraps checkout and
+#      setup-chalk-action together. `chalk:` is the single variable separating
+#      the two arms, and `profile:` selects the observables profile.
+#   3. permissions: id-token: write added for the action's OIDC connect;
+#      contents: read restated because the block zeroes unlisted scopes.
+#   4. A fail-closed assertion on the instrumented arm.
+#   5. The upstream job guard pinned the job to spring-projects/spring-framework,
+#      so it skipped outright on a fork. Repointed at this fork.
+# The build COMMAND is untouched: ./.github/actions/build still runs
+# `./gradlew check antora`.
+
+on:
+  workflow_dispatch:
+    inputs:
+      leg:
+        description: "baseline (uninstrumented) or instrumented (under chalk/curiosity)"
+        type: choice
+        options: [instrumented, baseline]
+        default: instrumented
+      profile:
+        description: "CrashOverride chalk profile"
+        type: string
+        default: curiosity-tests-racecar
+      racecar_run:
+        description: "racecar correlation token, echoed into the run name"
+        type: string
+        default: ""
+  pull_request:
+
+run-name: "Build Pull Request ${{ inputs.leg || 'push' }} ${{ inputs.racecar_run }}"
+
 permissions:
   contents: read
+  id-token: write
+
+env:
+  # The one variable that separates the arms. On baseline, action-checkout skips
+  # its Set up Chalk step entirely.
+  CHALK_ON: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
+
 jobs:
   build:
     name: Build Pull Request
-    if: ${{ github.repository == 'spring-projects/spring-framework' }}
+    if: ${{ github.repository == 'curiosity-tests/spring-framework' }}
     runs-on: ubuntu-latest
     steps:
       - name: Check Out Code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: crashappsec/action-checkout@main
+        with:
+          chalk: ${{ env.CHALK_ON }}
+          profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
+          # Default is best-effort; a silently-uninstrumented run is a corrupt
+          # data point rather than a degraded one, so fail closed.
+          observables_continue_on_error: false
+          # Upstream used actions/checkout, which does not fetch LFS. Keep the
+          # tree identical to what upstream CI builds.
+          lfs: false
+
+      # Assert on the host-server socket, NOT on LD_PRELOAD: co-monitor's loader
+      # clears LD_PRELOAD once it has injected, so an empty LD_PRELOAD is what
+      # SUCCESS looks like from inside the shell. co-hostd daemonizes, so pgrep
+      # is no good either. Socket existence is what curiosity's own CI gates on.
+      - name: Assert instrumentation is live
+        if: env.CHALK_ON == 'true'
+        run: |
+          test -n "${CURIOSITY_ROOT:-}" || { echo "::error::CURIOSITY_ROOT unset - observables never installed"; exit 1; }
+          test -S "${CURIOSITY_SOCKET_NAME:?socket name unset}" || { echo "::error::co-hostd socket absent"; exit 1; }
+
       - name: Build
         id: build
         uses: ./.github/actions/build
