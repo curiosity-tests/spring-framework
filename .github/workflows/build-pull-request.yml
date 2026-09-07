@@ -10,8 +10,10 @@ name: Build Pull Request
 #   3. permissions: id-token: write added for the action's OIDC connect;
 #      contents: read restated because the block zeroes unlisted scopes.
 #   4. A fail-closed assertion on the instrumented arm.
-#   5. The upstream job guard pinned the job to spring-projects/spring-framework,
-#      so it skipped outright on a fork. Repointed at this fork.
+#   5. The upstream job guard pins the job to spring-projects/spring-framework,
+#      so it skipped outright on a fork -- a run that passes having built
+#      nothing. This fork is added as an ADDITIONAL allowed repo; the upstream
+#      clause stays, and the job neither publishes nor consumes secrets.
 # The build COMMAND is untouched: ./.github/actions/build still runs
 # `./gradlew check antora`.
 
@@ -47,7 +49,9 @@ env:
 jobs:
   build:
     name: Build Pull Request
-    if: ${{ github.repository == 'spring-projects/spring-framework' }}
+    # ./.github/actions/build defaults publish=false, so this runs
+    # `./gradlew check antora` -- no deployment repository is written.
+    if: ${{ github.repository == 'spring-projects/spring-framework' || github.repository == 'curiosity-tests/spring-framework' }}
     runs-on: ubuntu-latest
     steps:
       - name: Check Out Code
